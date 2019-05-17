@@ -65,7 +65,28 @@ Film::Film(const Point2i &resolution, const Bounds2f &cropWindow,
     pixels = std::unique_ptr<Pixel[]>(new Pixel[croppedPixelBounds.Area()]);
     filmPixelMemory += croppedPixelBounds.Area() * sizeof(Pixel);
 
-    // Precompute filter weight table
+    ComputeFilterTable();
+}
+
+Film::Film(const Film &other)
+    : fullResolution(other.fullResolution),
+      diagonal(other.diagonal * 1000),
+      filter(other.filter),
+      filename(other.filename),
+      scale(other.scale),
+      maxSampleLuminance(other.maxSampleLuminance),
+      croppedPixelBounds(other.croppedPixelBounds) {
+    LOG(INFO) << "Copied film with full resolution " << fullResolution
+              << ", croppedPixelBounds " << croppedPixelBounds;
+
+    // Allocate film image storage
+    pixels = std::unique_ptr<Pixel[]>(new Pixel[croppedPixelBounds.Area()]);
+    filmPixelMemory += croppedPixelBounds.Area() * sizeof(Pixel);
+
+    ComputeFilterTable();
+}
+
+void Film::ComputeFilterTable() {
     int offset = 0;
     for (int y = 0; y < filterTableWidth; ++y) {
         for (int x = 0; x < filterTableWidth; ++x, ++offset) {
@@ -165,11 +186,11 @@ void Film::AddSplat(const Point2f &p, Spectrum v) {
     for (int i = 0; i < 3; ++i) pixel.splatXYZ[i].Add(xyz[i]);
 }
 
-void Film::WriteImage(Float splatScale) {
+void Film::ComputeFinalRGB(Float *rgb, Float splatScale) {
     // Convert image to RGB and compute final pixel values
     LOG(INFO) <<
         "Converting image to RGB and computing final weighted pixel values";
-    std::unique_ptr<Float[]> rgb(new Float[3 * croppedPixelBounds.Area()]);
+
     int offset = 0;
     for (Point2i p : croppedPixelBounds) {
         // Convert pixel XYZ color to RGB
@@ -202,6 +223,50 @@ void Film::WriteImage(Float splatScale) {
         rgb[3 * offset + 2] *= scale;
         ++offset;
     }
+}
+
+void Film::ComputeFinalRGB(EXRDataType *r, EXRDataType *g, EXRDataType *b,
+                           Float splatScale) {
+    // Convert image to RGB and compute final pixel values
+    LOG(INFO) <<
+        "Converting image to RGB and computing final weighted pixel values";
+
+    int offset = 0;
+    for (Point2i p : croppedPixelBounds) {
+        // Convert pixel XYZ color to RGB
+        Pixel &pixel = GetPixel(p);
+        XYZToRGB(pixel.xyz, r + offset, g + offset, b + offset);
+
+        // Normalize pixel with weight sum
+        EXRDataType filterWeightSum =
+            static_cast<EXRDataType>(pixel.filterWeightSum);
+        if (filterWeightSum != 0) {
+            EXRDataType invWt = 1 / filterWeightSum;
+            r[offset] = std::max<EXRDataType>(0, r[offset] * invWt);
+            g[offset] = std::max<EXRDataType>(0, g[offset] * invWt);
+            b[offset] = std::max<EXRDataType>(0, b[offset] * invWt);
+        }
+
+        // Add splat value at pixel
+        EXRDataType splatRGB[3];
+        Float splatXYZ[3] = {pixel.splatXYZ[0], pixel.splatXYZ[1],
+                             pixel.splatXYZ[2]};
+        XYZToRGB(splatXYZ, splatRGB, splatRGB + 1, splatRGB + 2);
+        r[offset] += splatScale * splatRGB[0];
+        g[offset] += splatScale * splatRGB[1];
+        b[offset] += splatScale * splatRGB[2];
+
+        // Scale pixel value by _scale_
+        r[offset] *= scale;
+        g[offset] *= scale;
+        b[offset] *= scale;
+        ++offset;
+    }
+}
+
+void Film::WriteImage(Float splatScale) {
+    std::unique_ptr<Float[]> rgb(new Float[3 * croppedPixelBounds.Area()]);
+    ComputeFinalRGB(rgb.get(), splatScale);
 
     // Write RGB image
     LOG(INFO) << "Writing image " << filename << " with bounds " <<

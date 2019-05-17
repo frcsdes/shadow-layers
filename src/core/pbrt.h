@@ -59,6 +59,8 @@
 #include <assert.h>
 #include <string.h>
 #include <glog/logging.h>
+#include <half.h>
+#include <ImfPixelType.h>
 
 // Platform-specific definitions
 #if defined(_WIN32) || defined(_WIN64)
@@ -159,6 +161,13 @@ class Distribution2D;
 #else
   typedef float Float;
 #endif  // PBRT_FLOAT_AS_DOUBLE
+#ifdef PBRT_EXR_AS_FLOAT
+  typedef float EXRDataType;
+  static PBRT_CONSTEXPR Imf::PixelType EXRDataName = Imf::FLOAT;
+#else
+  typedef half EXRDataType;
+  static PBRT_CONSTEXPR Imf::PixelType EXRDataName = Imf::HALF;
+#endif  // PBRT_EXR_AS_FLOAT
 class RNG;
 class ProgressReporter;
 class MemoryArena;

@@ -59,6 +59,16 @@ inline void XYZToRGB(const Float xyz[3], Float rgb[3]) {
     rgb[2] = 0.055648f * xyz[0] - 0.204043f * xyz[1] + 1.057311f * xyz[2];
 }
 
+inline void XYZToRGB(const Float xyz[3],
+                     EXRDataType *r, EXRDataType *g, EXRDataType *b) {
+    *r = static_cast<EXRDataType>(
+        3.240479f * xyz[0] - 1.537150f * xyz[1] - 0.498535f * xyz[2]);
+    *g = static_cast<EXRDataType>(
+        -0.969256f * xyz[0] + 1.875991f * xyz[1] + 0.041556f * xyz[2]);
+    *b = static_cast<EXRDataType>(
+        0.055648f * xyz[0] - 0.204043f * xyz[1] + 1.057311f * xyz[2]);
+}
+
 inline void RGBToXYZ(const Float rgb[3], Float xyz[3]) {
     xyz[0] = 0.412453f * rgb[0] + 0.357580f * rgb[1] + 0.180423f * rgb[2];
     xyz[1] = 0.212671f * rgb[0] + 0.715160f * rgb[1] + 0.072169f * rgb[2];

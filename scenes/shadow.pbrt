@@ -1,0 +1,136 @@
+Camera "perspective"
+	"float fov" 32
+	# Depth of field is supported
+	#"float lensradius" 0.06
+	#"float focaldistance" 4.2
+
+Film "image"
+	"integer xresolution" 1440
+	"integer yresolution" 810
+	# The output image is a multi-layered EXR file
+	"string filename" "teaser.exr"
+
+Integrator "shadow"
+	"integer maxdepth" 10
+	# Shadow casters identified by material
+	"string casters" ["Glass" "Mirror" "Plastic"]
+	# Shadow catchers identified by material
+	"string catchers" ["Scenery" "Glass" "Plastic"]
+	# Casters whose self-shadowing is being discarded
+	"string noselfshadow" ["Plastic"]
+	# Split the shadow layers by light (by triangle for mesh area lights)
+	#"bool splitlights" "true"
+	# Split the shadow layers into direct and indirect components
+	#"bool splitdirect" "true"
+
+Sampler "halton" "integer pixelsamples" 16
+
+WorldBegin
+
+LookAt 0 2 -6
+       0 1 -4
+       0 1 0
+
+# Left light source
+AttributeBegin
+	Translate -1 1.2 -3
+	Rotate -90 0 0 1
+	Rotate 45 1 0 0
+	Rotate -45 0 0 1
+	Scale 0.1 0.1 0.1
+	Material "none"
+	AreaLightSource "diffuse" "rgb L" [1 30 70]
+	Shape "trianglemesh"
+		"integer indices" [0 1 2 0 2 3]
+		"point P" [-0.5 0 -0.5 -0.5 0 0.5 0.5 0 0.5 0.5 0 -0.5]
+		"normal N" [0 1 0 0 1 0 0 1 0 0 1 0]
+AttributeEnd
+
+# Right light source
+AttributeBegin
+	Translate 1 1.2 -3
+	Rotate 90 0 0 1
+	Rotate 45 1 0 0
+	Rotate 40 0 0 1
+	Scale 0.5 0.5 0.5
+	Material "none"
+	AreaLightSource "diffuse" "rgb L" [3 2 0.1]
+	Shape "trianglemesh"
+		"integer indices" [0 1 2 0 2 3]
+		"point P" [-0.5 0 -0.5 -0.5 0 0.5 0.5 0 0.5 0.5 0 -0.5]
+		"normal N" [0 1 0 0 1 0 0 1 0 0 1 0]
+AttributeEnd
+
+# Glass sphere, front left
+AttributeBegin
+	Translate -0.8 0.3 -3
+	Material "identifier"
+		"string identifier" "Glass"
+		"string material" "glass"
+		"rgb Kt" [0.3 0.8 0.2]
+	Shape "sphere" "float radius" 0.3
+AttributeEnd
+
+# Mirror sphere, middle
+AttributeBegin
+	Translate 0 0.5 -1.8
+	Material "identifier"
+		"string identifier" "Mirror"
+		"string material" "mirror"
+		"rgb Kr" [0.8 0.8 0.8]
+	Shape "sphere" "float radius" 0.5
+AttributeEnd
+
+# Plastic sphere, front right
+AttributeBegin
+	Translate 0.6 0.2 -3.3
+	Material "identifier"
+		"string identifier" "Plastic"
+		"string material" "plastic"
+		"rgb Kd" [0.7 0.1 0.2]
+		"rgb Ks" [0.7 0.1 0.2]
+		"float roughness" 0.004
+	Shape "sphere" "float radius" 0.2
+AttributeEnd
+
+# White glossy sphere, back left
+AttributeBegin
+	Translate -1.9 0.7 -0.3
+	Material "identifier"
+		"string identifier" "Mirror"
+		"string material" "disney"
+		"rgb color" [1 0.9 0.9]
+		"float roughness" 0.2
+		"float metallic" 0.5
+	Shape "sphere" "float radius" 0.7
+AttributeEnd
+
+# Blue matte sphere, back right
+AttributeBegin
+	Translate 1.5 0.4 -1
+	Material "identifier"
+		"string identifier" "Mirror"
+		"string material" "matte"
+		"rgb Kd" [0.02 0.2 1]
+	Shape "sphere" "float radius" 0.4
+AttributeEnd
+
+# Ground plane
+AttributeBegin
+	Scale 20 20 20
+	Rotate 45 0 1 0
+	Texture "Checker" "color" "checkerboard"
+		"rgb tex1" [0.1 0.1 0.1]
+		"rgb tex2" [0.9 0.9 0.9]
+	Material "identifier"
+		"string identifier" "Scenery"
+		"string material" "matte"
+		"texture Kd" "Checker"
+	Shape "trianglemesh"
+		"integer indices" [0 1 2 0 2 3]
+		"point P" [-0.5 0 -0.5 -0.5 0 0.5 0.5 0 0.5 0.5 0 -0.5]
+		"normal N" [0 1 0 0 1 0 0 1 0 0 1 0]
+		"float uv" [0 0 50 0 50 50 0 50]
+AttributeEnd
+
+WorldEnd

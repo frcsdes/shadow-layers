@@ -15,6 +15,77 @@ The [pbrt website](http://pbrt.org) has general information about both the
 As of October 2018, the full [text of the book](http://www.pbr-book.org) is
 now available online, for free.
 
+Global Illumination Shadow Layers
+---------------------------------
+
+The code specific to the Global Illumination Shadow Layers paper implementation
+is available under the GPL v3 license. A test scene `shadow.pbrt` is provided as
+a starter.
+
+### Objects ###
+
+Objects are identified using a proxy material of type `identifier` to avoid
+storing additional data in the geometry. It accepts two parameters:
+
+* `string identifier` is the identifier of the object.
+* `string material` is the type of the underlying material.
+
+Any other parameter is forwarded to the underlying material.
+
+### Shadow layers rendering ###
+
+The `ShadowIntegrator` is simply called `shadow` in scene files. It accepts
+the same parameters as `path` along with:
+
+* `integer maxskips` sets the maximum number of intersection skips that can be
+performed when recovering lost radiance across surfaces. Default: `maxdepth`.
+* `string casters` is a list of strings containing the material identifiers of
+the objects that will cast (emit) shadows.
+* `string catchers` is a list of strings containing the material identifiers of
+the objects that will catch (receive) shadows.
+* `string noselfshadow` is a list of strings containing the material identifiers
+of the objects that should not display self-shadowing on their surface.
+* `bool singlefile` indicates if a multi-layered EXR file should be exported
+instead of separate images. Default is `true`.
+* `bool splitlights` indicates if shadow layers should be
+separated per light in the scene. Note that for area lights, each triangle of
+the mesh is considered a separate light. Default is `false`.
+* `bool splitdirect` indicates if shadow layers should be separated into direct
+and indirect components. Default is `false`.
+* `float skipprob` sets the probability of skipping a surface during
+propagation. Default is `0.5`.
+
+### Performance tests ###
+
+We implemented variants of the `PathIntegrator` and `ShadowIntegrator` that
+measure and display statistics about the render. They can be invoked as
+`pathstats` and `shadowstats` and take additional parameters.
+
+* `string mode` should be `normal`, `time` or `variance` to use either a fixed
+sample count, time, or variance. Default is `normal`.
+
+#### Fixed time ####
+
+* `integer batchsize` sets the number of samples evaluated at once. A bigger
+value increases cache benefits but reduces the precision of time measurement.
+Default is `32`.
+* `integer seconds` sets the maximum allowed render time in seconds. However,
+the last batch of samples is allowed to finish past the timer. Default is `60`.
+
+The render log will show the batch size and number of batches rendered.
+
+#### Fixed variance ####
+
+* `integer maxsamples` sets the maximum number of samples that can be used to
+render the image. Default is 4 times the `pixelsamples` value of the sampler.
+* `float variance` sets the maximum variance per pixel. The variance is
+estimated after having evaluated `pixelsamples` samples. If a pixel cannot
+converge under this threshold, it uses the maximum number of samples allowed.
+Default is `0.1`.
+
+The render log will show the percentage of unconverged pixels, the mean number
+of samples used, and the mean variance.
+
 Example scenes
 --------------
 

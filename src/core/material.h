@@ -55,6 +55,7 @@ class Material {
                                             MemoryArena &arena,
                                             TransportMode mode,
                                             bool allowMultipleLobes) const = 0;
+    virtual std::size_t Identifier() const { return 0; }
     virtual ~Material();
     static void Bump(const std::shared_ptr<Texture<Float>> &d,
                      SurfaceInteraction *si);

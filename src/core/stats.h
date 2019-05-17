@@ -185,6 +185,8 @@ enum class Prof {
     TexFiltTrilerp,
     TexFiltEWA,
     TexFiltPtex,
+    ShadowIntegratorContribute,
+    LayeredFilmAddSample,
     NumProfCategories
 };
 
@@ -240,6 +242,8 @@ static const char *ProfNames[] = {
     "MIPMap::Lookup() (trilinear)",
     "MIPMap::Lookup() (EWA)",
     "Ptex lookup",
+    "ShadowIntegrator::contribute()",
+    "LayeredFilm::AddSample()",
 };
 
 static_assert((int)Prof::NumProfCategories ==

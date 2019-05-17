@@ -60,6 +60,8 @@
 #include "integrators/sppm.h"
 #include "integrators/volpath.h"
 #include "integrators/whitted.h"
+#include "integrators/shadow.h"
+#include "integrators/statistics.h"
 #include "lights/diffuse.h"
 #include "lights/distant.h"
 #include "lights/goniometric.h"
@@ -71,6 +73,7 @@
 #include "materials/fourier.h"
 #include "materials/glass.h"
 #include "materials/hair.h"
+#include "materials/identifier.h"
 #include "materials/kdsubsurface.h"
 #include "materials/matte.h"
 #include "materials/metal.h"
@@ -590,7 +593,12 @@ std::shared_ptr<Material> MakeMaterial(const std::string &name,
         material = CreateKdSubsurfaceMaterial(mp);
     else if (name == "fourier")
         material = CreateFourierMaterial(mp);
-    else {
+    else if (name == "identifier") {
+        auto identifier = mp.FindString("identifier");
+        auto baseName = mp.FindString("material");
+        auto baseMaterial = MakeMaterial(baseName, mp);
+        material = new IdentifierMaterial(identifier, std::move(baseMaterial));
+    } else {
         Warning("Material \"%s\" unknown. Using \"matte\".", name.c_str());
         material = CreateMatteMaterial(mp);
     }
@@ -1685,6 +1693,8 @@ Integrator *RenderOptions::MakeIntegrator() const {
             CreateDirectLightingIntegrator(IntegratorParams, sampler, camera);
     else if (IntegratorName == "path")
         integrator = CreatePathIntegrator(IntegratorParams, sampler, camera);
+    else if (IntegratorName == "pathstats")
+        integrator = CreatePathIntegratorStats(IntegratorParams, sampler, camera);
     else if (IntegratorName == "volpath")
         integrator = CreateVolPathIntegrator(IntegratorParams, sampler, camera);
     else if (IntegratorName == "bdpt") {
@@ -1695,6 +1705,10 @@ Integrator *RenderOptions::MakeIntegrator() const {
         integrator = CreateAOIntegrator(IntegratorParams, sampler, camera);
     } else if (IntegratorName == "sppm") {
         integrator = CreateSPPMIntegrator(IntegratorParams, camera);
+    } else if (IntegratorName == "shadow") {
+        integrator = CreateShadowIntegrator(IntegratorParams, sampler, camera);
+    } else if (IntegratorName == "shadowstats") {
+        integrator = CreateShadowIntegratorStats(IntegratorParams, sampler, camera);
     } else {
         Error("Integrator \"%s\" unknown.", IntegratorName.c_str());
         return nullptr;

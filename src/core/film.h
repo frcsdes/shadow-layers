@@ -62,19 +62,23 @@ class Film {
          std::unique_ptr<Filter> filter, Float diagonal,
          const std::string &filename, Float scale,
          Float maxSampleLuminance = Infinity);
+    Film(const Film &other);
     Bounds2i GetSampleBounds() const;
     Bounds2f GetPhysicalExtent() const;
     std::unique_ptr<FilmTile> GetFilmTile(const Bounds2i &sampleBounds);
     void MergeFilmTile(std::unique_ptr<FilmTile> tile);
     void SetImage(const Spectrum *img) const;
     void AddSplat(const Point2f &p, Spectrum v);
+    void ComputeFinalRGB(Float *rgb, Float splatScale = 1);
+    void ComputeFinalRGB(EXRDataType *r, EXRDataType *g, EXRDataType *b,
+                         Float splatScale = 1);
     void WriteImage(Float splatScale = 1);
     void Clear();
 
     // Film Public Data
     const Point2i fullResolution;
     const Float diagonal;
-    std::unique_ptr<Filter> filter;
+    std::shared_ptr<Filter> filter;
     const std::string filename;
     Bounds2i croppedPixelBounds;
 
@@ -95,6 +99,7 @@ class Film {
     const Float maxSampleLuminance;
 
     // Film Private Methods
+    void ComputeFilterTable();
     Pixel &GetPixel(const Point2i &p) {
         CHECK(InsideExclusive(p, croppedPixelBounds));
         int width = croppedPixelBounds.pMax.x - croppedPixelBounds.pMin.x;
@@ -118,34 +123,34 @@ class FilmTile {
           maxSampleLuminance(maxSampleLuminance) {
         pixels = std::vector<FilmTilePixel>(std::max(0, pixelBounds.Area()));
     }
-    void AddSample(const Point2f &pFilm, Spectrum L,
-                   Float sampleWeight = 1.) {
-        ProfilePhase _(Prof::AddFilmSample);
-        if (L.y() > maxSampleLuminance)
-            L *= maxSampleLuminance / L.y();
+    void ComputeRasterBounds(const Point2f &pFilm, Point2f &pFilmDiscrete,
+                             Point2i &p0, Point2i &p1) const {
         // Compute sample's raster bounds
-        Point2f pFilmDiscrete = pFilm - Vector2f(0.5f, 0.5f);
-        Point2i p0 = (Point2i)Ceil(pFilmDiscrete - filterRadius);
-        Point2i p1 =
-            (Point2i)Floor(pFilmDiscrete + filterRadius) + Point2i(1, 1);
+        pFilmDiscrete = pFilm - Vector2f(0.5f, 0.5f);
+        p0 = (Point2i)  Ceil(pFilmDiscrete - filterRadius);
+        p1 = (Point2i) Floor(pFilmDiscrete + filterRadius) + Point2i(1, 1);
         p0 = Max(p0, pixelBounds.pMin);
         p1 = Min(p1, pixelBounds.pMax);
-
-        // Loop over filter support and add sample to pixel arrays
-
+    }
+    void ComputeFilterSupport(const Point2f &pFilmDiscrete,
+                              const Point2i &p0, const Point2i &p1,
+                              int* const ifx, int* const ify) const {
         // Precompute $x$ and $y$ filter table offsets
-        int *ifx = ALLOCA(int, p1.x - p0.x);
         for (int x = p0.x; x < p1.x; ++x) {
             Float fx = std::abs((x - pFilmDiscrete.x) * invFilterRadius.x *
                                 filterTableSize);
             ifx[x - p0.x] = std::min((int)std::floor(fx), filterTableSize - 1);
         }
-        int *ify = ALLOCA(int, p1.y - p0.y);
         for (int y = p0.y; y < p1.y; ++y) {
             Float fy = std::abs((y - pFilmDiscrete.y) * invFilterRadius.y *
                                 filterTableSize);
             ify[y - p0.y] = std::min((int)std::floor(fy), filterTableSize - 1);
         }
+    }
+    void AddSample(const Spectrum &L, const Point2i &p0, const Point2i &p1,
+                   const int* const ifx, const int* const ify,
+                   Float sampleWeight = 1.f) {
+        // Loop over filter support and add sample to pixel arrays
         for (int y = p0.y; y < p1.y; ++y) {
             for (int x = p0.x; x < p1.x; ++x) {
                 // Evaluate filter value at $(x,y)$ pixel
@@ -158,6 +163,22 @@ class FilmTile {
                 pixel.filterWeightSum += filterWeight;
             }
         }
+    }
+    void AddSample(const Point2f &pFilm, Spectrum L, Float sampleWeight = 1.) {
+        ProfilePhase _(Prof::AddFilmSample);
+
+        Point2f pFilmDiscrete;
+        Point2i p0;
+        Point2i p1;
+        ComputeRasterBounds(pFilm, pFilmDiscrete, p0, p1);
+
+        int* const ifx = ALLOCA(int, p1.x - p0.x);
+        int* const ify = ALLOCA(int, p1.y - p0.y);
+        ComputeFilterSupport(pFilmDiscrete, p0, p1, ifx, ify);
+
+        if (L.y() > maxSampleLuminance)
+            L *= maxSampleLuminance / L.y();
+        AddSample(L, p0, p1, ifx, ify);
     }
     FilmTilePixel &GetPixel(const Point2i &p) {
         CHECK(InsideExclusive(p, pixelBounds));

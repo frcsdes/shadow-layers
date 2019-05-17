@@ -421,6 +421,7 @@ SET ( PBRT_CORE_HEADERS
   src/core/integrator.h
   src/core/interaction.h
   src/core/interpolation.h
+  src/core/layeredfilm.h
   src/core/light.h
   src/core/lowdiscrepancy.h
   src/core/material.h
