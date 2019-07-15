@@ -1,28 +1,12 @@
-pbrt, Version 3
-===============
-
-[![Build Status](https://travis-ci.org/mmp/pbrt-v3.svg?branch=master)](https://travis-ci.org/mmp/pbrt-v3)
-[![Build status](https://ci.appveyor.com/api/projects/status/mlm9g91ejxlcn67s/branch/master?svg=true)](https://ci.appveyor.com/project/mmp/pbrt-v3/branch/master)
-
-This repository holds the source code to the version of pbrt that is
-described in the third edition of *Physically Based Rendering: From
-Theory to Implementation*, by [Matt Pharr](http://pharr.org/matt), [Wenzel
-Jakob](http://www.mitsuba-renderer.org/~wenzel/), and Greg Humphreys.  As
-before, the code is available under the BSD license.
-
-The [pbrt website](http://pbrt.org) has general information about both the
-*Physically Based Rendering* book as well as many other resources for pbrt.
-As of October 2018, the full [text of the book](http://www.pbr-book.org) is
-now available online, for free.
-
 Global Illumination Shadow Layers
----------------------------------
+=================================
 
 The code specific to the Global Illumination Shadow Layers paper implementation
 is available under the GPL v3 license. A test scene `shadow.pbrt` is provided as
 a starter.
 
-### Objects ###
+Objects
+-------
 
 Objects are identified using a proxy material of type `identifier` to avoid
 storing additional data in the geometry. It accepts two parameters:
@@ -32,7 +16,8 @@ storing additional data in the geometry. It accepts two parameters:
 
 Any other parameter is forwarded to the underlying material.
 
-### Shadow layers rendering ###
+Shadow layers rendering
+-----------------------
 
 The `ShadowIntegrator` is simply called `shadow` in scene files. It accepts
 the same parameters as `path` along with:
@@ -55,7 +40,8 @@ and indirect components. Default is `false`.
 * `float skipprob` sets the probability of skipping a surface during
 propagation. Default is `0.5`.
 
-### Performance tests ###
+Performance tests
+-----------------
 
 We implemented variants of the `PathIntegrator` and `ShadowIntegrator` that
 measure and display statistics about the render. They can be invoked as
@@ -64,7 +50,7 @@ measure and display statistics about the render. They can be invoked as
 * `string mode` should be `normal`, `time` or `variance` to use either a fixed
 sample count, time, or variance. Default is `normal`.
 
-#### Fixed time ####
+### Fixed time ###
 
 * `integer batchsize` sets the number of samples evaluated at once. A bigger
 value increases cache benefits but reduces the precision of time measurement.
@@ -74,7 +60,7 @@ the last batch of samples is allowed to finish past the timer. Default is `60`.
 
 The render log will show the batch size and number of batches rendered.
 
-#### Fixed variance ####
+### Fixed variance ###
 
 * `integer maxsamples` sets the maximum number of samples that can be used to
 render the image. Default is 4 times the `pixelsamples` value of the sampler.
@@ -85,6 +71,23 @@ Default is `0.1`.
 
 The render log will show the percentage of unconverged pixels, the mean number
 of samples used, and the mean variance.
+
+pbrt, Version 3
+===============
+
+[![Build Status](https://travis-ci.org/mmp/pbrt-v3.svg?branch=master)](https://travis-ci.org/mmp/pbrt-v3)
+[![Build status](https://ci.appveyor.com/api/projects/status/mlm9g91ejxlcn67s/branch/master?svg=true)](https://ci.appveyor.com/project/mmp/pbrt-v3/branch/master)
+
+This repository holds the source code to the version of pbrt that is
+described in the third edition of *Physically Based Rendering: From
+Theory to Implementation*, by [Matt Pharr](http://pharr.org/matt), [Wenzel
+Jakob](http://www.mitsuba-renderer.org/~wenzel/), and Greg Humphreys.  As
+before, the code is available under the BSD license.
+
+The [pbrt website](http://pbrt.org) has general information about both the
+*Physically Based Rendering* book as well as many other resources for pbrt.
+As of October 2018, the full [text of the book](http://www.pbr-book.org) is
+now available online, for free.
 
 Example scenes
 --------------
