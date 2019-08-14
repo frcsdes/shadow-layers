@@ -11,9 +11,7 @@
 #include "integrator.h"
 #include "lightdistrib.h"
 #include "shape.h"
-#include "shadow.h"
 #include "layeredfilm.h"
-
 #include <functional>
 #include <unordered_map>
 #include <unordered_set>
