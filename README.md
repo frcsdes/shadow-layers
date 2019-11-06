@@ -23,7 +23,7 @@ The `ShadowIntegrator` is simply called `shadow` in scene files. It accepts
 the same parameters as `path` along with:
 
 * `integer maxskips` sets the maximum number of intersection skips that can be
-performed when recovering lost radiance across surfaces. Default: `maxdepth`.
+performed when recovering lost radiance across surfaces. Default is `maxdepth`.
 * `string casters` is a list of strings containing the material identifiers of
 the objects that will cast (emit) shadows.
 * `string catchers` is a list of strings containing the material identifiers of
@@ -54,20 +54,21 @@ sample count, time, or variance. Default is `normal`.
 
 * `integer batchsize` sets the number of samples evaluated at once. A bigger
 value increases cache benefits but reduces the precision of time measurement.
-Default is `32`.
-* `integer seconds` sets the maximum allowed render time in seconds. However,
+Default is `8`.
+* `integer maxseconds` sets the maximum allowed render time in seconds. However,
 the last batch of samples is allowed to finish past the timer. Default is `60`.
 
-The render log will show the batch size and number of batches rendered.
+The number of samples will never go past `pixelsamples`, so make sure to
+indicate a big enough value beforehand. The render log will show the batch size
+and the number of batches rendered.
 
 ### Fixed variance ###
 
-* `integer maxsamples` sets the maximum number of samples that can be used to
-render the image. Default is 4 times the `pixelsamples` value of the sampler.
-* `float variance` sets the maximum variance per pixel. The variance is
-estimated after having evaluated `pixelsamples` samples. If a pixel cannot
-converge under this threshold, it uses the maximum number of samples allowed.
-Default is `0.1`.
+* `integer minsamples` sets the minimum number of samples used to estimate
+variance. Default is `128`.
+* `float maxvariance` sets the maximum variance per pixel. If a pixel cannot
+converge under this threshold, it uses all `pixelsamples` samples.
+Default is `0.01`.
 
 The render log will show the percentage of unconverged pixels, the mean number
 of samples used, and the mean variance.

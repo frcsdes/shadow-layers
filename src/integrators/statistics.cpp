@@ -4,6 +4,7 @@
 #include "camera.h"
 #include "paramset.h"
 #include "progressreporter.h"
+#include "filters/box.h"
 
 namespace pbrt {
 
@@ -15,139 +16,183 @@ STAT_FLOAT_DISTRIBUTION("Integrator/Variance per pixel", variancePerPixel);
 STAT_COUNTER("Integrator/Render time in milliseconds", nElapsedMilliseconds);
 STAT_COUNTER("Integrator/Camera rays traced", nCameraRays);
 
-IntegratorStats::IntegratorStats(const ParamSet &params, Film *const film,
-                                 const Sampler &sampler)
-    : mode([](std::string &&modeString) {
-          return modeString == "time"     ? Mode::TIME
-               : modeString == "variance" ? Mode::VARIANCE
-               :                            Mode::NORMAL;
-      }(params.FindOneString("mode", "normal"))),
-      batchSize(params.FindOneInt("batchsize", 32)),
-      minSamples(sampler.samplesPerPixel),
-      maxSamples(params.FindOneInt("maxsamples", 4 * minSamples)),
-      maxSeconds(params.FindOneInt("seconds", 60)),
-      maxVariance(params.FindOneFloat("variance", 0.1)),
-      bounds(film->croppedPixelBounds),
-      statsImages([film]() -> Images {
-          return {*film, {
-              {Stats::SPP,  "_spp"},
-              {Stats::MEAN, "_mean"},
-              {Stats::M2,   "_var"},
-          }};
-      }()) {}
+Statistics::Statistics(const ParamSet &params, const Film *film,
+                       const Sampler &sampler)
+    : mode([](const std::string &modeString) {
+              return modeString == "time"     ? Mode::TIME
+                   : modeString == "variance" ? Mode::VARIANCE
+                   :                            Mode::NORMAL;
+          }(params.FindOneString("mode", "normal"))),
+      maxSamples{sampler.samplesPerPixel},
+      minSamples{params.FindOneInt("minsamples", 128)},
+      maxVariance{params.FindOneFloat("maxvariance", 0.01)},
+      batchSize{params.FindOneInt("batchsize", 8)},
+      maxSeconds{params.FindOneInt("maxseconds", 60)},
+      originalFilm(film),
+      pixelBounds(film->croppedPixelBounds),
+      pixels(new Pixel[pixelBounds.Area()])
+      { CHECK_GE(maxSamples, minSamples); }
 
-void IntegratorStats::RenderBegin() {
+void Statistics::RenderBegin() {
     startTime = Clock::now();
 }
 
-void IntegratorStats::RenderEnd() const {
-    nElapsedMilliseconds = std::chrono::duration_cast<std::chrono::milliseconds>
-                           (Clock::now() - startTime).count();
+void Statistics::RenderEnd() const {
+    nElapsedMilliseconds = ElapsedMilliseconds();
     if (mode == Mode::TIME)
-        nSamplesBatch = batchSize;
+        nSamplesBatch = BatchSize();
 }
 
-bool IntegratorStats::RenderBatch() const {
-    switch (mode) {
-        case Mode::TIME:
-            nBatches++;
-            return std::chrono::duration_cast<std::chrono::seconds>
-                   (Clock::now() - startTime).count() < maxSeconds;
-        default:
+void Statistics::WriteImages() const {
+    CHECK(originalFilm);
+    Film samplingFilm(*originalFilm, StatImagesFilter(), "_sampling");
+    Film varianceFilm(*originalFilm, StatImagesFilter(), "_variance");
+
+    for (Point2i pixel : pixelBounds) {
+        Point2f floatPixel(static_cast<Float>(pixel.x),
+                           static_cast<Float>(pixel.y));
+        const Pixel &statsPixel = GetPixel(pixel);
+        samplingFilm.AddSplat(floatPixel, Sampling(statsPixel));
+        varianceFilm.AddSplat(floatPixel, Variance(statsPixel));
+    }
+
+    samplingFilm.WriteImage();
+    varianceFilm.WriteImage();
+}
+
+bool Statistics::StartNextBatch(int index) {
+    if (mode == Mode::TIME) {
+        bool start = (index + 1) * batchSize < maxSamples
+                  && ElapsedMilliseconds() < maxSeconds * 1000;
+        if (start) nBatches++;
+        return start;
+    }
+
+    else {
+        if (batchOnce) {
+            batchOnce = false;
+            return true;
+        } else
             return false;
     }
 }
 
-void IntegratorStats::SamplesLoop(const Point2i &pixel, Tile &tile,
-                                  SamplingFunctor sampleOnce) const {
-    if (!InsideExclusive(pixel, tile.at(Stats::SPP)->GetPixelBounds())) {
-        sampleOnce();
-        return;
-    }
+long Statistics::BatchSize() const {
+    return batchSize;
+}
 
-    auto loop = [&]() {
-        UpdateStats(pixel, tile, sampleOnce());
-    };
+template<class F>
+void Statistics::SamplingLoop(const Point2i &pixel, F sampleOnce) {
+    auto loop = [&]() { UpdateStats(pixel, sampleOnce()); };
 
     switch (mode) {
         case Mode::NORMAL:
-            for (int s = 0; s < minSamples; ++s)
+            for (int i = 0; i < minSamples; ++i)
                 loop();
             break;
 
         case Mode::TIME:
-            for (int s = 0; s < batchSize; ++s)
+            for (int i = 0; i < batchSize; ++i)
                 loop();
             break;
 
         case Mode::VARIANCE:
-            for (int s = 0; s < minSamples; ++s)
+            for (int i = 0; i < minSamples; ++i)
                 loop();
-            while (!StopSampling(pixel, tile))
+            while (!StopCriterion(pixel))
                 loop();
-            ReportStats(pixel, tile);
+            ReportStats(pixel);
             break;
     }
-
-    tile.at(Stats::SPP)->GetPixel(pixel).filterWeightSum
-        = maxSamples - minSamples;
-    tile.at(Stats::MEAN)->GetPixel(pixel).filterWeightSum = 1;
-    tile.at(Stats::M2)->GetPixel(pixel).filterWeightSum
-        = Samples(pixel, tile) - 1;
-    tile.at(Stats::SPP)->GetPixel(pixel).contribSum
-        = Samples(pixel, tile) - minSamples;
 }
 
-IntegratorStats::Images &IntegratorStats::StatsImages() {
-    return statsImages;
+void Statistics::UpdateStats(const Point2i &pixel, const Spectrum &L) {
+    if (!InsideExclusive(pixel, pixelBounds))
+        return;
+
+    Pixel &statsPixel = GetPixel(pixel);
+    long &samples = statsPixel.samples;
+    Spectrum &mean = statsPixel.mean;
+    Spectrum &moment2 = statsPixel.moment2;
+
+    samples++;
+    Spectrum delta1 = L - mean;
+    mean += delta1 / samples;
+    Spectrum delta2 = L - mean;
+    moment2 += delta1 * delta2;
 }
 
-Float &IntegratorStats::Samples(const Point2i &pixel, Tile &tile) const {
-    return tile.at(Stats::SPP)->GetPixel(pixel).contribSum[0];
+Float Statistics::Sampling(const Pixel &statsPixel) const {
+    return mode == Mode::VARIANCE
+         ? static_cast<Float>(statsPixel.samples - minSamples) /
+                   static_cast<Float>(maxSamples - minSamples)
+         : static_cast<Float>(statsPixel.samples);
 }
 
-Spectrum &IntegratorStats::Mean(const Point2i &pixel, Tile &tile) const {
-    return tile.at(Stats::MEAN)->GetPixel(pixel).contribSum;
-}
-
-Spectrum &IntegratorStats::Moment2(const Point2i &pixel, Tile &tile) const {
-    return tile.at(Stats::M2)->GetPixel(pixel).contribSum;
-}
-
-void IntegratorStats::UpdateStats(const Point2i &pixel, Tile &tile,
-                                 const Spectrum &L) const {
-    Samples(pixel, tile) += 1;
-    auto delta1 = L - Mean(pixel, tile);
-    Mean(pixel, tile) += delta1 / Samples(pixel, tile);
-    auto delta2 = L - Mean(pixel, tile);
-    Moment2(pixel, tile) += delta1 * delta2;
-}
-
-Spectrum IntegratorStats::Variance(const Point2i &pixel, Tile &tile) const {
-    return Samples(pixel, tile) > 1
-         ? Moment2(pixel, tile) / (Samples(pixel, tile) - 1)
+Spectrum Statistics::Variance(const Pixel &statsPixel) const {
+    return statsPixel.samples > 1
+         ? statsPixel.moment2 / (static_cast<Float>(statsPixel.samples) - 1)
          : 0;
 }
 
-bool IntegratorStats::Converged(const Point2i &pixel, Tile &tile) const {
-    return Variance(pixel, tile).y() <= maxVariance;
+bool Statistics::Converged(const Pixel &statsPixel) const {
+    return Variance(statsPixel).y() < maxVariance;
 }
 
-bool IntegratorStats::StopSampling(const Point2i &pixel, Tile &tile) const {
-    return Converged(pixel, tile) || Samples(pixel, tile) >= maxSamples;
+bool Statistics::StopCriterion(const Point2i &pixel) const {
+    if (!InsideExclusive(pixel, pixelBounds))
+        return true;
+    const Pixel &statsPixel = GetPixel(pixel);
+    return statsPixel.samples >= maxSamples || Converged(statsPixel);
 }
 
-void IntegratorStats::ReportStats(const Point2i &pixel, Tile &tile) const {
+void Statistics::ReportStats(const Point2i &pixel) const {
+    if (!InsideExclusive(pixel, pixelBounds))
+        return;
+    const Pixel &statsPixel = GetPixel(pixel);
+
     nPixels++;
-    if (!Converged(pixel, tile))
+    if (!Converged(statsPixel))
         nUnconvergedPixels++;
-    ReportValue(samplesPerPixel, Samples(pixel, tile));
-    ReportValue(variancePerPixel, Variance(pixel, tile).y());
+    ReportValue(samplesPerPixel, statsPixel.samples);
+    ReportValue(variancePerPixel, Variance(statsPixel).y());
+}
+
+long Statistics::ElapsedMilliseconds() const {
+    using namespace std::chrono;
+    return duration_cast<milliseconds>(Clock::now() - startTime).count();
+}
+
+std::string Statistics::WorkTitle() const {
+    std::string type = mode == Mode::TIME     ? "time"
+                     : mode == Mode::VARIANCE ? "variance"
+                     :                          "sampling";
+    return "Rendering (equal " + type + ')';
+}
+
+long Statistics::UpdateWork() const {
+    return mode == Mode::TIME ? 0 : 1;
+}
+
+Statistics::Pixel &Statistics::GetPixel(Point2i pixel) {
+    const auto *that = this;
+    return const_cast<Pixel &>(that->GetPixel(pixel));
+}
+
+const Statistics::Pixel &Statistics::GetPixel(Point2i pixel) const {
+    CHECK(InsideExclusive(pixel, pixelBounds));
+    int width = pixelBounds.pMax.x - pixelBounds.pMin.x;
+    int offset = (pixel.x - pixelBounds.pMin.x)
+               + (pixel.y - pixelBounds.pMin.y) * width;
+    return pixels[offset];
+}
+
+std::unique_ptr<Filter> Statistics::StatImagesFilter() {
+    return std::unique_ptr<Filter>(new BoxFilter({0, 0}));
 }
 
 // PathIntegratorStats Method Definitions
-PathIntegratorStats::PathIntegratorStats(const ParamSet &params,
-                                         int maxDepth,
+PathIntegratorStats::PathIntegratorStats(Statistics stats, int maxDepth,
                                          std::shared_ptr<const Camera> camera,
                                          std::shared_ptr<Sampler> sampler,
                                          const Bounds2i &pixelBounds,
@@ -155,7 +200,7 @@ PathIntegratorStats::PathIntegratorStats(const ParamSet &params,
                                          const std::string &lightSampleStrategy)
     : PathIntegrator(maxDepth, camera, sampler, pixelBounds, rrThreshold,
                      lightSampleStrategy),
-      IntegratorStats(params, camera->film, *sampler),
+      stats(std::move(stats)),
       sampler(std::move(sampler)),
       pixelBounds(pixelBounds) {}
 
@@ -170,118 +215,115 @@ void PathIntegratorStats::Render(const Scene &scene) {
     Point2i nTiles((sampleExtent.x + tileSize - 1) / tileSize,
                    (sampleExtent.y + tileSize - 1) / tileSize);
 
-    RenderBegin();
-    ProgressReporter reporter(nTiles.x * nTiles.y, "Rendering");
-    {
-        do {
-            ParallelFor2D([&](Point2i tile) {
-                // Render section of image corresponding to _tile_
+    stats.RenderBegin();
+    ProgressReporter reporter(nTiles.x * nTiles.y, stats.WorkTitle());
+    for (int batch = 0; stats.StartNextBatch(batch); ++batch) {
+        ParallelFor2D([&](Point2i tile) {
+            // Render section of image corresponding to _tile_
 
-                // Allocate _MemoryArena_ for tile
-                MemoryArena arena;
+            // Allocate _MemoryArena_ for tile
+            MemoryArena arena;
 
-                // Get sampler instance for tile
-                int seed = tile.y * nTiles.x + tile.x;
-                std::unique_ptr<Sampler> tileSampler = sampler->Clone(seed);
+            // Get sampler instance for tile
+            int seed = nTiles.x * nTiles.y * batch + nTiles.x * tile.y + tile.x;
+            std::unique_ptr<Sampler> tileSampler = sampler->Clone(seed);
 
-                // Compute sample bounds for tile
-                int x0 = sampleBounds.pMin.x + tile.x * tileSize;
-                int x1 = std::min(x0 + tileSize, sampleBounds.pMax.x);
-                int y0 = sampleBounds.pMin.y + tile.y * tileSize;
-                int y1 = std::min(y0 + tileSize, sampleBounds.pMax.y);
-                Bounds2i tileBounds(Point2i(x0, y0), Point2i(x1, y1));
-                LOG(INFO) << "Starting image tile " << tileBounds;
+            // Compute sample bounds for tile
+            int x0 = sampleBounds.pMin.x + tile.x * tileSize;
+            int x1 = std::min(x0 + tileSize, sampleBounds.pMax.x);
+            int y0 = sampleBounds.pMin.y + tile.y * tileSize;
+            int y1 = std::min(y0 + tileSize, sampleBounds.pMax.y);
+            Bounds2i tileBounds(Point2i(x0, y0), Point2i(x1, y1));
+            LOG(INFO) << "Starting image tile " << tileBounds;
 
-                // Get _FilmTile_ for tile
-                std::unique_ptr<FilmTile> filmTile =
-                    camera->film->GetFilmTile(tileBounds);
-                auto statsTile = StatsImages().GetFilmTile(tileBounds);
+            // Get _FilmTile_ for tile
+            auto filmTile = camera->film->GetFilmTile(tileBounds);
 
-                // Loop over pixels in tile to render them
-                for (Point2i pixel : tileBounds) {
-                    {
-                        ProfilePhase pp(Prof::StartPixel);
-                        tileSampler->StartPixel(pixel);
-                    }
-
-                    // Do this check after the StartPixel() call; this keeps
-                    // the usage of RNG values from (most) Samplers that use
-                    // RNGs consistent, which improves reproducability /
-                    // debugging.
-                    if (!InsideExclusive(pixel, pixelBounds))
-                        continue;
-
-                    SamplesLoop(pixel, statsTile, [&]() {
-                        // Initialize _CameraSample_ for current sample
-                        CameraSample cameraSample =
-                            tileSampler->GetCameraSample(pixel);
-
-                        // Generate camera ray for current sample
-                        RayDifferential ray;
-                        Float rayWeight =
-                            camera->GenerateRayDifferential(cameraSample, &ray);
-                        ray.ScaleDifferentials(
-                            1 / std::sqrt((Float)tileSampler->samplesPerPixel));
-                        ++nCameraRays;
-
-                        // Evaluate radiance along camera ray
-                        Spectrum L(0.f);
-                        if (rayWeight > 0) L = Li(ray, scene, *tileSampler,
-                                                  arena, 0);
-
-                        // Issue warning if unexpected radiance value returned
-                        if (L.HasNaNs()) {
-                            LOG(ERROR) << StringPrintf(
-                                "Not-a-number radiance value returned for "
-                                "pixel (%d, %d), sample %d. Setting to black.",
-                                pixel.x, pixel.y,
-                                (int)tileSampler->CurrentSampleNumber());
-                            L = Spectrum(0.f);
-                        } else if (L.y() < -1e-5) {
-                            LOG(ERROR) << StringPrintf(
-                                "Negative luminance value, %f, returned for "
-                                "pixel (%d, %d), sample %d. Setting to black.",
-                                L.y(), pixel.x, pixel.y,
-                                (int)tileSampler->CurrentSampleNumber());
-                            L = Spectrum(0.f);
-                        } else if (std::isinf(L.y())) {
-                              LOG(ERROR) << StringPrintf(
-                                "Infinite luminance value returned for "
-                                "pixel (%d, %d), sample %d. Setting to black.",
-                                pixel.x, pixel.y,
-                                (int)tileSampler->CurrentSampleNumber());
-                            L = Spectrum(0.f);
-                        }
-                        VLOG(1) << "Camera sample: " << cameraSample
-                                << " -> ray: " << ray
-                                << " -> L = " << L;
-
-                        // Add camera ray's contribution to image
-                        filmTile->AddSample(cameraSample.pFilm, L, rayWeight);
-
-                        // Free _MemoryArena_ memory from computing image sample
-                        // value
-                        arena.Reset();
-                        tileSampler->StartNextSample();
-
-                        return L;
-                    });
+            // Loop over pixels in tile to render them
+            for (Point2i pixel : tileBounds) {
+                {
+                    ProfilePhase pp(Prof::StartPixel);
+                    tileSampler->StartPixel(pixel);
+                    tileSampler->SetSampleNumber(batch * stats.BatchSize());
                 }
-                LOG(INFO) << "Finished image tile " << tileBounds;
 
-                // Merge image tile into _Film_
-                camera->film->MergeFilmTile(std::move(filmTile));
-                StatsImages().MergeFilmTile(statsTile);
-            }, nTiles);
-        } while (RenderBatch());
-        reporter.Done();
+                // Do this check after the StartPixel() call; this keeps
+                // the usage of RNG values from (most) Samplers that use
+                // RNGs consistent, which improves reproducability /
+                // debugging.
+                if (!InsideExclusive(pixel, pixelBounds))
+                    continue;
+
+                stats.SamplingLoop(pixel, [&]() {
+                    // Initialize _CameraSample_ for current sample
+                    CameraSample cameraSample =
+                        tileSampler->GetCameraSample(pixel);
+
+                    // Generate camera ray for current sample
+                    RayDifferential ray;
+                    Float rayWeight =
+                        camera->GenerateRayDifferential(cameraSample, &ray);
+                    ray.ScaleDifferentials(
+                        1 / std::sqrt((Float) tileSampler->samplesPerPixel));
+                    ++nCameraRays;
+
+                    // Evaluate radiance along camera ray
+                    Spectrum L(0.f);
+                    if (rayWeight > 0)
+                        L = Li(ray, scene, *tileSampler, arena, 0);
+
+                    // Issue warning if unexpected radiance value returned
+                    if (L.HasNaNs()) {
+                        LOG(ERROR) << StringPrintf(
+                            "Not-a-number radiance value returned for "
+                            "pixel (%d, %d), sample %d. Setting to black.",
+                            pixel.x, pixel.y,
+                            (int) tileSampler->CurrentSampleNumber());
+                        L = Spectrum(0.f);
+                    } else if (L.y() < -1e-5) {
+                        LOG(ERROR) << StringPrintf(
+                            "Negative luminance value, %f, returned for "
+                            "pixel (%d, %d), sample %d. Setting to black.",
+                            L.y(), pixel.x, pixel.y,
+                            (int) tileSampler->CurrentSampleNumber());
+                        L = Spectrum(0.f);
+                    } else if (std::isinf(L.y())) {
+                        LOG(ERROR) << StringPrintf(
+                            "Infinite luminance value returned for "
+                            "pixel (%d, %d), sample %d. Setting to black.",
+                            pixel.x, pixel.y,
+                            (int) tileSampler->CurrentSampleNumber());
+                        L = Spectrum(0.f);
+                    }
+                    VLOG(1) << "Camera sample: " << cameraSample
+                            << " -> ray: " << ray
+                            << " -> L = " << L;
+
+                    // Add camera ray's contribution to image
+                    filmTile->AddSample(cameraSample.pFilm, L, rayWeight);
+
+                    // Free _MemoryArena_ memory from computing image sample
+                    // value
+                    arena.Reset();
+
+                    tileSampler->StartNextSample();
+                    return L;
+                });
+            }
+            LOG(INFO) << "Finished image tile " << tileBounds;
+
+            // Merge image tile into _Film_
+            camera->film->MergeFilmTile(std::move(filmTile));
+            reporter.Update(stats.UpdateWork());
+        }, nTiles);
     }
-    RenderEnd();
+    reporter.Done();
+    stats.RenderEnd();
     LOG(INFO) << "Rendering finished";
 
     // Save final image after rendering
     camera->film->WriteImage();
-    StatsImages().WriteSeparateImages();
+    stats.WriteImages();
 }
 
 PathIntegratorStats *CreatePathIntegratorStats(
@@ -308,14 +350,14 @@ PathIntegratorStats *CreatePathIntegratorStats(
     std::string lightStrategy =
         params.FindOneString("lightsamplestrategy", "spatial");
 
-    return new PathIntegratorStats(params, maxDepth, camera, sampler,
-                                   pixelBounds, rrThreshold, lightStrategy);
+    return new PathIntegratorStats({params, camera->film, *sampler}, maxDepth,
+                                   camera, sampler, pixelBounds, rrThreshold,
+                                   lightStrategy);
 }
 
 // ShadowIntegratorStats Method Definitions
-ShadowIntegratorStats::ShadowIntegratorStats(const ParamSet &params,
-                                             int maxDepth, int maxSkips,
-                                             Float skipProb,
+ShadowIntegratorStats::ShadowIntegratorStats(Statistics stats, int maxDepth,
+                                             int maxSkips, Float skipProb,
                                              std::shared_ptr<const Camera> cam,
                                              std::shared_ptr<Sampler> sampler,
                                              NamedObjects namedCasters,
@@ -331,7 +373,7 @@ ShadowIntegratorStats::ShadowIntegratorStats(const ParamSet &params,
                        std::move(noSelfShadow), singleFile,
                        splitLights, splitDirect, pixelBounds, rrThreshold,
                        lightSampleStrategy),
-      IntegratorStats(params, cam->film, *sampler),
+      stats(std::move(stats)),
       camera(std::move(cam)),
       sampler(std::move(sampler)),
       pixelBounds(pixelBounds) {}
@@ -349,96 +391,95 @@ void ShadowIntegratorStats::Render(const Scene &scene) {
     Point2i nTiles((sampleExtent.x + tileSize - 1) / tileSize,
                    (sampleExtent.y + tileSize - 1) / tileSize);
 
-    RenderBegin();
-    ProgressReporter reporter(nTiles.x * nTiles.y, "Rendering");
-    {
-        do {
-            ParallelFor2D([&](Point2i tile) {
-                // Render section of image corresponding to _tile_
+    stats.RenderBegin();
+    ProgressReporter reporter(nTiles.x * nTiles.y, stats.WorkTitle());
+    for (int batch = 0; stats.StartNextBatch(batch); ++batch) {
+        ParallelFor2D([&](Point2i tile) {
+            // Render section of image corresponding to _tile_
 
-                // Allocate _MemoryArena_ for tile
-                MemoryArena arena;
+            // Allocate _MemoryArena_ for tile
+            MemoryArena arena;
 
-                // Get sampler instance for tile
-                // A second sampler is needed to avoid patterns appearing due to
-                // correlation between pixel position and caster skipping
-                int seed = tile.y * nTiles.x + tile.x;
-                std::unique_ptr<Sampler> tileSampler = sampler->Clone(seed);
-                std::unique_ptr<Sampler> skipSampler = sampler->Clone(seed);
+            // Get sampler instance for tile
+            // A second sampler is needed to avoid patterns appearing due to
+            // correlation between pixel position and caster skipping
+            int seed = nTiles.x * nTiles.y * batch + nTiles.x * tile.y + tile.x;
+            std::unique_ptr<Sampler> tileSampler = sampler->Clone(seed);
+            std::unique_ptr<Sampler> skipSampler = sampler->Clone(seed);
 
-                // Compute sample bounds for tile
-                int x0 = sampleBounds.pMin.x + tile.x * tileSize;
-                int x1 = std::min(x0 + tileSize, sampleBounds.pMax.x);
-                int y0 = sampleBounds.pMin.y + tile.y * tileSize;
-                int y1 = std::min(y0 + tileSize, sampleBounds.pMax.y);
-                Bounds2i tileBounds(Point2i(x0, y0), Point2i(x1, y1));
-                LOG(INFO) << "Starting image tile " << tileBounds;
+            // Compute sample bounds for tile
+            int x0 = sampleBounds.pMin.x + tile.x * tileSize;
+            int x1 = std::min(x0 + tileSize, sampleBounds.pMax.x);
+            int y0 = sampleBounds.pMin.y + tile.y * tileSize;
+            int y1 = std::min(y0 + tileSize, sampleBounds.pMax.y);
+            Bounds2i tileBounds(Point2i(x0, y0), Point2i(x1, y1));
+            LOG(INFO) << "Starting image tile " << tileBounds;
 
-                // Get a tile for each layer
-                auto layeredTile = GetLayers().GetFilmTile(tileBounds);
-                auto statsTile = StatsImages().GetFilmTile(tileBounds);
+            // Get a tile for each layer
+            auto layeredTile = GetLayers().GetFilmTile(tileBounds);
 
-                // Loop over pixels in tile to render them
-                for (Point2i pixel : tileBounds) {
-                    {
-                        ProfilePhase pp(Prof::StartPixel);
-                        tileSampler->StartPixel(pixel);
-                        skipSampler->StartPixel(pixel);
-                    }
-
-                    // Do this check after the BeginPixel() call; this keeps
-                    // the usage of RNG values from (most) Samplers that use
-                    // RNGs consistent, which improves reproducibility /
-                    // debugging.
-                    if (!InsideExclusive(pixel, pixelBounds))
-                        continue;
-
-                    SamplesLoop(pixel, statsTile, [&]() {
-                        // Initialize _CameraSample_ for current sample
-                        CameraSample cameraSample =
-                            tileSampler->GetCameraSample(pixel);
-
-                        // Generate camera ray for current sample
-                        RayDifferential ray;
-                        Float rayWeight =
-                            camera->GenerateRayDifferential(cameraSample, &ray);
-                        ray.ScaleDifferentials(1 /
-                            std::sqrt((Float) tileSampler->samplesPerPixel));
-                        ++nCameraRays;
-
-                        // Evaluate radiance along camera ray. Contributions
-                        // to the various layers are made inside Li
-                        Spectrum L;
-                        if (rayWeight > 0)
-                            L = Li(ray, scene, *tileSampler, *skipSampler,
-                                   arena, layeredTile.samples);
-
-                        layeredTile.AddSample(cameraSample.pFilm, rayWeight);
-
-                        // Free _MemoryArena_ memory from computing image sample
-                        // value
-                        arena.Reset();
-                        tileSampler->StartNextSample();
-                        skipSampler->StartNextSample();
-
-                        return L;
-                    });
+            // Loop over pixels in tile to render them
+            for (Point2i pixel : tileBounds) {
+                {
+                    ProfilePhase pp(Prof::StartPixel);
+                    tileSampler->StartPixel(pixel);
+                    skipSampler->StartPixel(pixel);
+                    tileSampler->SetSampleNumber(batch * stats.BatchSize());
+                    skipSampler->SetSampleNumber(batch * stats.BatchSize());
                 }
-                LOG(INFO) << "Finished image tile " << tileBounds;
 
-                // Merge image tiles into _FilmLayers_
-                GetLayers().MergeFilmTile(layeredTile);
-                StatsImages().MergeFilmTile(statsTile);
-            }, nTiles);
-        } while (RenderBatch());
-        reporter.Done();
+                // Do this check after the BeginPixel() call; this keeps
+                // the usage of RNG values from (most) Samplers that use
+                // RNGs consistent, which improves reproducibility /
+                // debugging.
+                if (!InsideExclusive(pixel, pixelBounds))
+                    continue;
+
+                stats.SamplingLoop(pixel, [&]() {
+                    // Initialize _CameraSample_ for current sample
+                    CameraSample cameraSample =
+                        tileSampler->GetCameraSample(pixel);
+
+                    // Generate camera ray for current sample
+                    RayDifferential ray;
+                    Float rayWeight =
+                        camera->GenerateRayDifferential(cameraSample, &ray);
+                    ray.ScaleDifferentials(
+                        1 / std::sqrt((Float) tileSampler->samplesPerPixel));
+                    ++nCameraRays;
+
+                    // Evaluate radiance along camera ray. Contributions
+                    // to the various layers are made inside Li
+                    Spectrum L;
+                    if (rayWeight > 0)
+                        L = Li(ray, scene, *tileSampler, *skipSampler,
+                               arena, layeredTile.samples);
+
+                    layeredTile.AddSample(cameraSample.pFilm, rayWeight);
+
+                    // Free _MemoryArena_ memory from computing image sample
+                    // value
+                    arena.Reset();
+
+                    tileSampler->StartNextSample();
+                    skipSampler->StartNextSample();
+                    return L;
+                });
+            }
+            LOG(INFO) << "Finished image tile " << tileBounds;
+
+            // Merge image tiles into _FilmLayers_
+            GetLayers().MergeFilmTile(layeredTile);
+            reporter.Update(stats.UpdateWork());
+        }, nTiles);
     }
-    RenderEnd();
+    reporter.Done();
+    stats.RenderEnd();
     LOG(INFO) << "Rendering finished";
 
     // Save final images after rendering
     GetLayers().WriteImage();
-    StatsImages().WriteSeparateImages();
+    stats.WriteImages();
 }
 
 ShadowIntegratorStats *CreateShadowIntegratorStats(
@@ -514,7 +555,8 @@ ShadowIntegratorStats *CreateShadowIntegratorStats(
     Float rrThreshold = params.FindOneFloat("rrthreshold", Float(1));
     auto lightStrategy = params.FindOneString("lightsamplestrategy", "spatial");
 
-    return new ShadowIntegratorStats(params, maxDepth, maxSkips, skipProb,
+    return new ShadowIntegratorStats({params, camera->film, *sampler},
+                                     maxDepth, maxSkips, skipProb,
                                      std::move(camera), std::move(sampler),
                                      std::move(namedCasters),
                                      std::move(namedCatchers),

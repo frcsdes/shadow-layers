@@ -62,7 +62,13 @@ class Film {
          std::unique_ptr<Filter> filter, Float diagonal,
          const std::string &filename, Float scale,
          Float maxSampleLuminance = Infinity);
+    Film(const Point2i &resolution, const Bounds2i &croppedPixelBounds,
+         std::shared_ptr<Filter> filter, Float diagonal,
+         const std::string &filename, Float scale,
+         Float maxSampleLuminance = Infinity);
     Film(const Film &other);
+    Film(const Film &other, std::unique_ptr<Filter> filter,
+         const std::string &suffix);
     Bounds2i GetSampleBounds() const;
     Bounds2f GetPhysicalExtent() const;
     std::unique_ptr<FilmTile> GetFilmTile(const Bounds2i &sampleBounds);

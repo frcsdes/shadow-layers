@@ -57,12 +57,12 @@ class LayeredFilm {
 
   public:
     LayeredFilm() = default;
-    LayeredFilm(const Film &original, Map<std::string> layerNames)
+    LayeredFilm(const Film &original, Map<std::string> names)
         : filename(original.filename),
-          layerNames(std::move(layerNames)) {
+          layerNames(std::move(names)) {
         // Create a _Film_ for each key
-        for (auto &name : this->layerNames)
-            layers.emplace(std::move(name.first), original);
+        for (const auto &name : layerNames)
+            layers.emplace(name.first, original);
     }
 
     LayeredTile GetFilmTile(const Bounds2i &sampleBounds) {

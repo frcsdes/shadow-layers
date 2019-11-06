@@ -31,7 +31,7 @@ struct ShadowObject {
 
     friend bool operator==(ShadowObject lhs, ShadowObject rhs);
     friend bool operator!=(ShadowObject lhs, ShadowObject rhs);
-    operator bool() const;
+    explicit operator bool() const;
 };
 
 // A _ShadowSpectrum_ represents a _Spectrum_ value that may have been occluded.
@@ -46,7 +46,7 @@ struct ShadowSpectrum {
 
     friend ShadowSpectrum operator*(Float x, ShadowSpectrum &&S);
     friend ShadowSpectrum operator/(ShadowSpectrum &&S, Float x);
-    friend ShadowSpectrum operator*(Spectrum L, ShadowSpectrum &&S);
+    friend ShadowSpectrum operator*(const Spectrum &L, ShadowSpectrum &&S);
 };
 
 // An enumeration to separate between direct or indirect shadows optionally
@@ -65,19 +65,18 @@ struct ShadowLayer {
 
 
 // Utility to combine multiple hashing functions
-inline void HashCombine(std::size_t &seed) {}
+inline std::size_t HashCombine(std::size_t seed) { return seed; }
 
 template<class T, class... Rest>
-inline void HashCombine(std::size_t &seed, const T &value, Rest... rest) {
-    std::hash<T> hasher;
-    seed ^= hasher(value) + 0x9e3779b9 + (seed << 6) + (seed >> 2);
-    HashCombine(seed, rest...);
+inline std::size_t HashCombine(std::size_t seed, const T &value, Rest... rest) {
+    auto shift = 0x9e3779b9 + (seed << 6u) + (seed >> 2u);
+    return HashCombine(seed ^ (std::hash<T>()(value) + shift), rest...);
 }
 
 // Specialize std::hash for the custom classes above
 template<>
 struct std::hash<pbrt::ShadowObject> {
-    std::size_t operator()(pbrt::ShadowObject object) const {
+    std::size_t operator()(pbrt::ShadowObject const& object) const {
         return object.identifier;
     };
 };
@@ -85,9 +84,7 @@ struct std::hash<pbrt::ShadowObject> {
 template<>
 struct std::hash<pbrt::ShadowLayer> {
     std::size_t operator()(const pbrt::ShadowLayer &key) const {
-        std::size_t seed = 0;
-        HashCombine(seed, key.caster, key.light, key.order);
-        return seed;
+        return HashCombine(0, key.caster, key.light, key.order);;
     }
 };
 
@@ -96,13 +93,13 @@ namespace pbrt {
 
 // ShadowIntegrator Declarations
 class ShadowIntegrator : public Integrator {
+  public:
     using Layers = LayeredFilm<ShadowLayer>;
     using TileSamples = decltype(Layers::LayeredTile::samples);
     using EncounterMap = std::unordered_map<ShadowObject, bool>;
-
-  public:
     using NamedObjects = std::unordered_map<ShadowObject, std::string>;
 
+  public:
     // ShadowIntegrator Public Methods
     ShadowIntegrator(int maxDepth, int maxSkips, Float skipProb,
                      std::shared_ptr<const Camera> camera,
@@ -112,7 +109,7 @@ class ShadowIntegrator : public Integrator {
                      NamedObjects noSelfShadow,
                      bool singleFile, bool splitLights, bool splitDirect,
                      const Bounds2i &pixelBounds, Float rrThreshold = 1,
-                     const std::string &lightSampleStrategy = "spatial");
+                     std::string lightSampleStrategy = "spatial");
 
     void Preprocess(const Scene &scene);
     void Render(const Scene &scene) override;

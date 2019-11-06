@@ -45,21 +45,26 @@ STAT_MEMORY_COUNTER("Memory/Film pixels", filmPixelMemory);
 Film::Film(const Point2i &resolution, const Bounds2f &cropWindow,
            std::unique_ptr<Filter> filt, Float diagonal,
            const std::string &filename, Float scale, Float maxSampleLuminance)
+    : Film(resolution,
+           Bounds2i(Point2i(std::ceil(resolution.x * cropWindow.pMin.x),
+                            std::ceil(resolution.y * cropWindow.pMin.y)),
+                    Point2i(std::ceil(resolution.x * cropWindow.pMax.x),
+                            std::ceil(resolution.y * cropWindow.pMax.y))),
+           std::move(filt), diagonal, filename, scale, maxSampleLuminance) {}
+
+Film::Film(const Point2i &resolution, const Bounds2i &croppedPixelBounds,
+           std::shared_ptr<Filter> filt, Float diagonal,
+           const std::string &filename, Float scale, Float maxSampleLuminance)
     : fullResolution(resolution),
       diagonal(diagonal * .001),
       filter(std::move(filt)),
       filename(filename),
       scale(scale),
-      maxSampleLuminance(maxSampleLuminance) {
+      maxSampleLuminance(maxSampleLuminance),
+      croppedPixelBounds(croppedPixelBounds) {
     // Compute film image bounds
-    croppedPixelBounds =
-        Bounds2i(Point2i(std::ceil(fullResolution.x * cropWindow.pMin.x),
-                         std::ceil(fullResolution.y * cropWindow.pMin.y)),
-                 Point2i(std::ceil(fullResolution.x * cropWindow.pMax.x),
-                         std::ceil(fullResolution.y * cropWindow.pMax.y)));
-    LOG(INFO) << "Created film with full resolution " << resolution <<
-        ". Crop window of " << cropWindow << " -> croppedPixelBounds " <<
-        croppedPixelBounds;
+    LOG(INFO) << "Created film with full resolution " << resolution
+              << ". CroppedPixelBounds " << croppedPixelBounds;
 
     // Allocate film image storage
     pixels = std::unique_ptr<Pixel[]>(new Pixel[croppedPixelBounds.Area()]);
@@ -69,22 +74,16 @@ Film::Film(const Point2i &resolution, const Bounds2f &cropWindow,
 }
 
 Film::Film(const Film &other)
-    : fullResolution(other.fullResolution),
-      diagonal(other.diagonal * 1000),
-      filter(other.filter),
-      filename(other.filename),
-      scale(other.scale),
-      maxSampleLuminance(other.maxSampleLuminance),
-      croppedPixelBounds(other.croppedPixelBounds) {
-    LOG(INFO) << "Copied film with full resolution " << fullResolution
-              << ", croppedPixelBounds " << croppedPixelBounds;
+    : Film(other.fullResolution, other.croppedPixelBounds, other.filter,
+           other.diagonal * 1000, other.filename, other.scale,
+           other.maxSampleLuminance) {}
 
-    // Allocate film image storage
-    pixels = std::unique_ptr<Pixel[]>(new Pixel[croppedPixelBounds.Area()]);
-    filmPixelMemory += croppedPixelBounds.Area() * sizeof(Pixel);
-
-    ComputeFilterTable();
-}
+Film::Film(const Film &other, std::unique_ptr<Filter> filter,
+           const std::string &suffix)
+    : Film(other.fullResolution, other.croppedPixelBounds, std::move(filter),
+           other.diagonal * 1000, std::string(other.filename).insert(
+               other.filename.find_last_of('.'), suffix),
+           other.scale, other.maxSampleLuminance) {}
 
 void Film::ComputeFilterTable() {
     int offset = 0;

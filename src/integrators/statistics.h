@@ -19,58 +19,68 @@
 
 namespace pbrt {
 
-class IntegratorStats {
+class Statistics {
     enum class Mode {NORMAL, TIME, VARIANCE};
-    enum class Stats {SPP, MEAN, M2};
-
     using Clock = std::chrono::steady_clock;
-    using Images = LayeredFilm<Stats>;
-    using Tile = LayeredFilm<Stats>::LayeredTile;
-    using SamplingFunctor = std::function<Spectrum()>;
+
+public:
+    struct Pixel {
+        long samples = 0;
+        Spectrum mean = 0;
+        Spectrum moment2 = 0;
+    };
 
   public:
-    IntegratorStats(const ParamSet &params, Film *const film,
-                    const Sampler &sampler);
+    Statistics(const ParamSet &params, const Film *film,
+               const Sampler &sampler);
 
     void RenderBegin();
     void RenderEnd() const;
-    bool RenderBatch() const;
+    void WriteImages() const;
 
-    void SamplesLoop(const Point2i &pixel, Tile &tile,
-                     SamplingFunctor sampleOnce) const;
+    bool StartNextBatch(int index);
+    long BatchSize() const;
 
-    Images &StatsImages();
+    template<class F>
+    void SamplingLoop(const Point2i &pixel, F sampleOnce);
+
+    std::string WorkTitle() const;
+    long UpdateWork() const;
 
   private:
-    Float &Samples(const Point2i &pixel, Tile &tile) const;
-    Spectrum &Mean(const Point2i &pixel, Tile &tile) const;
-    Spectrum &Moment2(const Point2i &pixel, Tile &tile) const;
+    void UpdateStats(const Point2i &pixel, const Spectrum &L);
+    void ReportStats(const Point2i &pixel) const;
 
-    void UpdateStats(const Point2i &pixel, Tile &tile, const Spectrum &L) const;
-
-    Spectrum Variance(const Point2i &pixel, Tile &tile) const;
-    bool Converged(const Point2i &pixel, Tile &tile) const;
-    bool StopSampling(const Point2i &pixel, Tile &tile) const;
-    void ReportStats(const Point2i &pixel, Tile &tile) const;
+    Float Sampling(const Pixel &statsPixel) const;
+    Spectrum Variance(const Pixel &statsPixel) const;
+    bool Converged(const Pixel &statsPixel) const;
+    bool StopCriterion(const Point2i &pixel) const;
+    long ElapsedMilliseconds() const;
 
     const Mode mode;
-    const long batchSize;
-    const long minSamples;
     const long maxSamples;
-    const int maxSeconds;
+    const long minSamples;
     const Float maxVariance;
-    const Bounds2i bounds;
+    const long batchSize;
+    const int maxSeconds;
 
-    std::chrono::time_point<Clock> startTime;
-    Images statsImages;
+    const Film *originalFilm;
+    const Bounds2i pixelBounds;
+    std::unique_ptr<Pixel[]> pixels;
+    Clock::time_point startTime;
+    bool batchOnce = true;
+
+    Pixel &GetPixel(Point2i pixel);
+    const Pixel &GetPixel(Point2i pixel) const;
+    static std::unique_ptr<Filter> StatImagesFilter();
 };
 
 // PathIntegratorStats Declarations
-class PathIntegratorStats : public PathIntegrator, IntegratorStats {
+class PathIntegratorStats : public PathIntegrator {
   public:
     // PathIntegratorStats Public Methods
-    PathIntegratorStats(const ParamSet &params,
-                        int maxDepth, std::shared_ptr<const Camera> camera,
+    PathIntegratorStats(Statistics stats, int maxDepth,
+                        std::shared_ptr<const Camera> camera,
                         std::shared_ptr<Sampler> sampler,
                         const Bounds2i &pixelBounds, Float rrThreshold = 1,
                         const std::string &lightSampleStrategy = "spatial");
@@ -79,6 +89,7 @@ class PathIntegratorStats : public PathIntegrator, IntegratorStats {
 
   private:
     // PathIntegratorStats Private Data
+    Statistics stats;
     const std::shared_ptr<Sampler> sampler;
     const Bounds2i pixelBounds;
 };
@@ -90,13 +101,13 @@ PathIntegratorStats *CreatePathIntegratorStats(
 );
 
 // ShadowIntegratorStats Declarations
-class ShadowIntegratorStats : public ShadowIntegrator, IntegratorStats {
+class ShadowIntegratorStats : public ShadowIntegrator {
     using LayeredTile = LayeredFilm<ShadowLayer>::LayeredTile;
 
   public:
     // ShadowIntegratorStats Public Methods
-    ShadowIntegratorStats(const ParamSet &params,
-                          int maxDepth, int maxSkips, Float skipProb,
+    ShadowIntegratorStats(Statistics stats, int maxDepth,
+                          int maxSkips, Float skipProb,
                           std::shared_ptr<const Camera> cam,
                           std::shared_ptr<Sampler> sampler,
                           NamedObjects namedCasters,
@@ -110,6 +121,7 @@ class ShadowIntegratorStats : public ShadowIntegrator, IntegratorStats {
 
   private:
     // ShadowIntegratorStats Private Data
+    Statistics stats;
     const std::shared_ptr<const Camera> camera;
     const std::shared_ptr<Sampler> sampler;
     const Bounds2i pixelBounds;

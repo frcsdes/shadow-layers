@@ -52,7 +52,7 @@ ShadowSpectrum operator/(ShadowSpectrum &&S, Float x) {
     return S;
 }
 
-ShadowSpectrum operator*(Spectrum L, ShadowSpectrum &&S) {
+ShadowSpectrum operator*(const Spectrum &L, ShadowSpectrum &&S) {
     S.LL *= L;
     S.WL *= L;
     return S;
@@ -76,7 +76,7 @@ ShadowIntegrator::ShadowIntegrator(int maxDepth, int maxSkips, Float skipProb,
                                    bool splitLights, bool splitDirect,
                                    const Bounds2i &pixelBounds,
                                    Float rrThreshold,
-                                   const std::string &lightSampleStrategy)
+                                   std::string lightSampleStrategy)
     : camera(std::move(camera)),
       sampler(std::move(sampler)),
       pixelBounds(pixelBounds),
@@ -91,7 +91,7 @@ ShadowIntegrator::ShadowIntegrator(int maxDepth, int maxSkips, Float skipProb,
       splitLights(splitLights),
       splitDirect(splitDirect),
       rrThreshold(rrThreshold),
-      lightSampleStrategy(lightSampleStrategy) {}
+      lightSampleStrategy(std::move(lightSampleStrategy)) {}
 
 void ShadowIntegrator::Preprocess(const Scene &scene) {
     lightDistrib = CreateLightSampleDistribution(lightSampleStrategy, scene);
@@ -106,7 +106,8 @@ void ShadowIntegrator::Preprocess(const Scene &scene) {
     } else
         allLights.push_back(nullptr);
 
-    auto layerName = [this](ShadowObject caster, int light, ShadowOrder order) {
+    auto layerName = [this](ShadowObject caster, unsigned int light,
+                            ShadowOrder order) {
         auto sep = singleFile ? '.' : '_';
         std::ostringstream name;
 
@@ -138,7 +139,7 @@ void ShadowIntegrator::Preprocess(const Scene &scene) {
         return name.str();
     };
 
-    Layers::Map<std::string> layerNames;
+    Layers::Map<std::string> layerNames{};
     // Loop over casters * lights and add layers
     for (const auto &casterKey : casters) {
         const auto &caster = casterKey.first;
@@ -286,7 +287,7 @@ Spectrum ShadowIntegrator::Li(const RayDifferential &r, const Scene &scene,
     auto hasEncountered = noneEncountered;
 
     // Radiance contribution to the different layers is handled by this lambda
-    auto contribute = [&](const Light *light, Spectrum L,
+    auto contribute = [&](const Light *light, const Spectrum &L,
                           ShadowObject tempCaster = {}) {
         ProfilePhase pp(Prof::ShadowIntegratorContribute);
         const auto *l = splitLights ? light : nullptr;
